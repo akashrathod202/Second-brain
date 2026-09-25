@@ -1,0 +1,23 @@
+@import "tailwindcss";
+@keyframes profileDropdown {
+    from {
+      opacity: 0;
+      transform: translateY(-8px) scale(0.97);
+    }
+  
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+  
+  @keyframes avatarFloat {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+  
+    50% {
+      transform: translateY(-3px);
+    }
+  }
