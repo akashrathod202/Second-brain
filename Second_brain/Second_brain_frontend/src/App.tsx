@@ -13,6 +13,7 @@ import Signup from "./pages/auth/Signup";
 import SecondBrainLanding from "./pages/SecondBrainLanding";
 import  CreateContent  from "./pages/Create/CreateContent"
 import Ask from "../src/pages/ASK/AskSecondBrain"
+import ContentDetail from "./pages/Notes/ContentDetail";
  
 
 function App() {
@@ -35,6 +36,10 @@ function App() {
         <Route path="/videos" element={<Videos />} />
         <Route path="/create" element={<CreateContent/>} />
         <Route path="/Ask" element={<Ask/>} />
+        <Route
+  path="/content/:contentId"
+  element={<ContentDetail />}
+/>
       </Route>
 
      

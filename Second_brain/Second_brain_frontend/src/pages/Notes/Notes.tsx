@@ -11,15 +11,13 @@ import { useNavigate } from "react-router-dom";
 type Note = {
   id: string;
   title: string;
-  description: string;
+  content: string;
   tags: string[];
-  collection: string;
-  favorite: boolean;
   createdAt: string;
   updatedAt?: string;
 };
 
-type FilterType = "all" | "favorites" | "recent" | string;
+type FilterType = "all" | "favorites" | "recent";
 
 const API_URL = "http://localhost:8000/api/v1/content";
 
@@ -46,7 +44,11 @@ function Notes() {
         return;
       }
 
-      const response = await fetch(`${"http://localhost:8000/api/v1/content/getcontent"}?search=${encodeURIComponent(search)}`, {
+      const url = `${API_URL}/getcontent?search=${encodeURIComponent(
+        search
+      )}`;
+
+      const response = await fetch(url, {
         method: "GET",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -56,15 +58,11 @@ function Notes() {
 
       const data = await response.json();
 
-      if (!response.ok) {
-        if (response.status === 404) {
-          setNotes([]);
-          return;
-        }
+      console.log("NOTES STATUS:", response.status);
+      console.log("NOTES RESPONSE:", data);
 
-        throw new Error(
-          data.message || "Failed to fetch notes"
-        );
+      if (!response.ok) {
+        throw new Error(data.message || "Failed to fetch notes");
       }
 
       const backendNotes = (data.content || [])
@@ -72,20 +70,19 @@ function Notes() {
         .map((item: any) => ({
           id: item._id,
           title: item.title || "Untitled Note",
-          description:
-            item.description ||
-            item.content ||
-            "No description available.",
+
+          // Your backend currently stores note text in `link`
+          content: item.link || "",
+
           tags: item.tags || [],
-          collection:
-            item.collection || "Uncategorized",
-          favorite: Boolean(item.favorite),
           createdAt: item.createdAt,
           updatedAt: item.updatedAt,
         }));
 
       setNotes(backendNotes);
     } catch (err) {
+      console.error("FETCH NOTES ERROR:", err);
+
       setError(
         err instanceof Error
           ? err.message
@@ -100,74 +97,35 @@ function Notes() {
     fetchNotes();
   }, [search]);
 
-  const collections = useMemo(() => {
-    const unique = new Set(
-      notes.map((note) => note.collection)
-    );
-
-    return Array.from(unique);
-  }, [notes]);
-
   const filteredNotes = useMemo(() => {
     let result = [...notes];
 
     if (filter === "favorites") {
-      result = result.filter(
-        (note) => note.favorite
-      );
+      // Favorite API isn't implemented yet.
+      // Keeping this filter disabled logically for now.
+      result = result;
     }
 
     if (filter === "recent") {
       result = result.slice(0, 8);
     }
 
-    if (
-      filter !== "all" &&
-      filter !== "favorites" &&
-      filter !== "recent"
-    ) {
-      result = result.filter(
-        (note) => note.collection === filter
-      );
-    }
-
     result.sort((a, b) => {
-      const dateA = new Date(
-        a.updatedAt || a.createdAt
-      ).getTime();
+      if (sort === "updated") {
+        return (
+          new Date(b.updatedAt || b.createdAt).getTime() -
+          new Date(a.updatedAt || a.createdAt).getTime()
+        );
+      }
 
-      const dateB = new Date(
-        b.updatedAt || b.createdAt
-      ).getTime();
-
-      return sort === "updated"
-        ? dateB - dateA
-        : new Date(b.createdAt).getTime() -
-            new Date(a.createdAt).getTime();
+      return (
+        new Date(b.createdAt).getTime() -
+        new Date(a.createdAt).getTime()
+      );
     });
 
     return result;
   }, [notes, filter, sort]);
-
-  const toggleFavorite = async (id: string) => {
-    /*
-      We will connect this to your backend
-      PATCH favorite API after we create that route.
-      
-      For now update the UI optimistically.
-    */
-
-    setNotes((current) =>
-      current.map((note) =>
-        note.id === id
-          ? {
-              ...note,
-              favorite: !note.favorite,
-            }
-          : note
-      )
-    );
-  };
 
   const formatDate = (date: string) => {
     const value = new Date(date);
@@ -187,7 +145,7 @@ function Notes() {
     <div className="min-h-screen bg-zinc-950 px-6 py-8 text-white">
       <div className="mx-auto max-w-7xl">
 
-        {/* Header */}
+        {/* HEADER */}
 
         <div className="flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
           <div>
@@ -201,6 +159,8 @@ function Notes() {
           </div>
 
           <div className="flex items-center gap-3">
+
+            {/* SEARCH */}
 
             <div className="
               flex items-center gap-2
@@ -217,9 +177,7 @@ function Notes() {
 
               <input
                 value={search}
-                onChange={(e) =>
-                  setSearch(e.target.value)
-                }
+                onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search notes..."
                 className="
                   w-44
@@ -231,6 +189,8 @@ function Notes() {
                 "
               />
             </div>
+
+            {/* NEW NOTE */}
 
             <button
               type="button"
@@ -249,22 +209,21 @@ function Notes() {
             >
               + New Note
             </button>
-
           </div>
         </div>
 
-        {/* Main content */}
+        {/* MAIN */}
 
-        <div className="mt-10 grid gap-8 lg:grid-cols-[300px_1fr]">
+        <div className="mt-10 grid gap-8 lg:grid-cols-[260px_1fr]">
 
-          {/* Sidebar */}
+          {/* SIDEBAR */}
 
           <aside className="
+            h-fit
             rounded-2xl
             border border-zinc-800
             bg-zinc-900/60
             p-5
-            lg:h-fit
           ">
 
             <p className="text-xs font-medium tracking-wider text-zinc-500">
@@ -273,13 +232,14 @@ function Notes() {
 
             <div className="mt-4 space-y-2">
 
+              {/* ALL */}
+
               <button
                 onClick={() => setFilter("all")}
                 className={`
                   flex w-full items-center justify-between
                   rounded-xl px-4 py-3
-                  text-sm
-                  transition
+                  text-sm transition
                   ${
                     filter === "all"
                       ? "bg-zinc-800 text-white"
@@ -297,41 +257,14 @@ function Notes() {
                 </span>
               </button>
 
-              <button
-                onClick={() => setFilter("favorites")}
-                className={`
-                  flex w-full items-center justify-between
-                  rounded-xl px-4 py-3
-                  text-sm
-                  transition
-                  ${
-                    filter === "favorites"
-                      ? "bg-zinc-800 text-white"
-                      : "text-zinc-400 hover:bg-zinc-800/60 hover:text-white"
-                  }
-                `}
-              >
-                <span className="flex items-center gap-3">
-                  <FiStar />
-                  Favorites
-                </span>
-
-                <span className="text-xs text-zinc-500">
-                  {
-                    notes.filter(
-                      (note) => note.favorite
-                    ).length
-                  }
-                </span>
-              </button>
+              {/* RECENT */}
 
               <button
                 onClick={() => setFilter("recent")}
                 className={`
                   flex w-full items-center justify-between
                   rounded-xl px-4 py-3
-                  text-sm
-                  transition
+                  text-sm transition
                   ${
                     filter === "recent"
                       ? "bg-zinc-800 text-white"
@@ -350,52 +283,9 @@ function Notes() {
               </button>
 
             </div>
-
-            {/* Collections */}
-
-            {collections.length > 0 && (
-              <>
-                <div className="my-6 h-px bg-zinc-800" />
-
-                <p className="text-xs font-medium tracking-wider text-zinc-500">
-                  COLLECTIONS
-                </p>
-
-                <div className="mt-4 space-y-1">
-
-                  {collections.map((item) => (
-                    <button
-                      key={item}
-                      onClick={() =>
-                        setFilter(item)
-                      }
-                      className={`
-                        flex w-full items-center
-                        rounded-xl px-4 py-3
-                        text-sm
-                        transition
-                        ${
-                          filter === item
-                            ? "bg-zinc-800 text-white"
-                            : "text-zinc-400 hover:bg-zinc-800/60 hover:text-white"
-                        }
-                      `}
-                    >
-                      <span className="mr-3">
-                        ●
-                      </span>
-
-                      {item}
-                    </button>
-                  ))}
-
-                </div>
-              </>
-            )}
-
           </aside>
 
-          {/* Notes */}
+          {/* NOTES */}
 
           <section>
 
@@ -407,7 +297,9 @@ function Notes() {
                 </p>
 
                 <h2 className="mt-2 text-2xl font-semibold">
-                  All Notes
+                  {filter === "recent"
+                    ? "Recent Notes"
+                    : "All Notes"}
                 </h2>
               </div>
 
@@ -415,9 +307,7 @@ function Notes() {
                 value={sort}
                 onChange={(e) =>
                   setSort(
-                    e.target.value as
-                      | "updated"
-                      | "newest"
+                    e.target.value as "updated" | "newest"
                   )
                 }
                 className="
@@ -437,18 +327,16 @@ function Notes() {
                   Newest First
                 </option>
               </select>
-
             </div>
 
-            {/* Filter buttons */}
+            {/* FILTERS */}
 
             <div className="mt-6 flex flex-wrap gap-2">
 
               <button
                 onClick={() => setFilter("all")}
                 className={`
-                  rounded-xl px-4 py-2
-                  text-sm
+                  rounded-xl px-4 py-2 text-sm
                   ${
                     filter === "all"
                       ? "bg-amber-400 text-black"
@@ -460,62 +348,46 @@ function Notes() {
               </button>
 
               <button
-                onClick={() => setFilter("favorites")}
+                onClick={() => setFilter("recent")}
                 className={`
-                  rounded-xl px-4 py-2
-                  text-sm
+                  rounded-xl px-4 py-2 text-sm
                   ${
-                    filter === "favorites"
+                    filter === "recent"
                       ? "bg-amber-400 text-black"
                       : "border border-zinc-800 bg-zinc-900 text-zinc-400"
                   }
                 `}
               >
-                Favorites
+                Recent
               </button>
-
-              {collections.map((item) => (
-                <button
-                  key={item}
-                  onClick={() => setFilter(item)}
-                  className={`
-                    rounded-xl px-4 py-2
-                    text-sm
-                    ${
-                      filter === item
-                        ? "bg-amber-400 text-black"
-                        : "border border-zinc-800 bg-zinc-900 text-zinc-400"
-                    }
-                  `}
-                >
-                  {item}
-                </button>
-              ))}
-
             </div>
 
-            {/* Loading */}
+            {/* LOADING */}
 
             {loading && (
-              <div className="mt-8 grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-                {[1, 2, 3, 4, 5, 6].map(
-                  (item) => (
-                    <div
-                      key={item}
-                      className="
-                        h-80
-                        animate-pulse
-                        rounded-2xl
-                        border border-zinc-800
-                        bg-zinc-900
-                      "
-                    />
-                  )
-                )}
+              <div className="
+                mt-8
+                grid
+                gap-5
+                md:grid-cols-2
+                xl:grid-cols-3
+              ">
+                {[1, 2, 3, 4, 5, 6].map((item) => (
+                  <div
+                    key={item}
+                    className="
+                      h-72
+                      animate-pulse
+                      rounded-2xl
+                      border border-zinc-800
+                      bg-zinc-900
+                    "
+                  />
+                ))}
               </div>
             )}
 
-            {/* Error */}
+            {/* ERROR */}
 
             {!loading && error && (
               <div className="
@@ -552,7 +424,7 @@ function Notes() {
               </div>
             )}
 
-            {/* Empty */}
+            {/* EMPTY */}
 
             {!loading &&
               !error &&
@@ -583,9 +455,7 @@ function Notes() {
 
                   {!search && (
                     <button
-                      onClick={() =>
-                        navigate("/create")
-                      }
+                      onClick={() => navigate("/create")}
                       className="
                         mt-5
                         rounded-xl
@@ -602,7 +472,7 @@ function Notes() {
                 </div>
               )}
 
-            {/* Cards */}
+            {/* NOTE CARDS */}
 
             {!loading &&
               !error &&
@@ -615,99 +485,82 @@ function Notes() {
                   xl:grid-cols-3
                 ">
                   {filteredNotes.map((note) => (
-                    <div
+                    <article
                       key={note.id}
+                      onClick={() =>
+                        navigate(`/content/${note.id}`)
+                      }
                       className="
                         group
+                        cursor-pointer
                         rounded-2xl
                         border border-zinc-800
                         bg-zinc-900
                         p-6
                         transition
-                        hover:-translate-y-0.5
+                        hover:-translate-y-1
                         hover:border-zinc-700
                         hover:shadow-xl
                         hover:shadow-black/20
                       "
                     >
 
+                      {/* ICON */}
+
                       <div className="flex items-start justify-between">
 
-                        <span className="
-                          rounded-lg
+                        <div className="
+                          flex
+                          h-10
+                          w-10
+                          items-center
+                          justify-center
+                          rounded-xl
                           bg-amber-400/10
-                          px-3 py-1.5
-                          text-[11px]
-                          font-semibold
-                          uppercase
-                          tracking-wide
                           text-amber-400
                         ">
-                          {note.collection}
-                        </span>
+                          <FiBookOpen size={18} />
+                        </div>
 
-                        <button
-                          onClick={() =>
-                            toggleFavorite(note.id)
-                          }
-                          className="
-                            rounded-lg
-                            p-2
-                            text-zinc-600
-                            hover:bg-zinc-800
-                            hover:text-amber-400
-                          "
-                        >
-                          <FiStar
-                            size={17}
-                            fill={
-                              note.favorite
-                                ? "currentColor"
-                                : "none"
-                            }
-                            className={
-                              note.favorite
-                                ? "text-amber-400"
-                                : ""
-                            }
-                          />
-                        </button>
-
+                        <FiStar
+                          size={17}
+                          className="text-zinc-700"
+                        />
                       </div>
 
-                      <button
-                        onClick={() =>
-                          navigate(
-                            `/content/${note.id}`
-                          )
-                        }
-                        className="mt-6 block w-full text-left"
-                      >
-                        <h3 className="
-                          line-clamp-2
-                          text-lg
-                          font-semibold
-                          leading-7
-                          text-white
-                        ">
-                          {note.title}
-                        </h3>
+                      {/* TITLE */}
 
-                        <p className="
-                          mt-3
-                          line-clamp-3
-                          text-sm
-                          leading-7
-                          text-zinc-500
-                        ">
-                          {note.description}
-                        </p>
-                      </button>
+                      <h3 className="
+                        mt-6
+                        line-clamp-2
+                        text-lg
+                        font-semibold
+                        leading-7
+                        text-white
+                        transition
+                        group-hover:text-amber-300
+                      ">
+                        {note.title}
+                      </h3>
 
-                      <div className="mt-5 flex flex-wrap gap-2">
-                        {note.tags
-                          .slice(0, 3)
-                          .map((tag) => (
+                      {/* CONTENT PREVIEW */}
+
+                      <p className="
+                        mt-3
+                        line-clamp-4
+                        min-h-[96px]
+                        text-sm
+                        leading-6
+                        text-zinc-500
+                      ">
+                        {note.content}
+                      </p>
+
+                      {/* TAGS */}
+
+                      {note.tags.length > 0 && (
+                        <div className="mt-5 flex flex-wrap gap-2">
+                          {note.tags.slice(0, 3).map((tag) => (
                             <span
                               key={tag}
                               className="
@@ -721,7 +574,10 @@ function Notes() {
                               #{tag}
                             </span>
                           ))}
-                      </div>
+                        </div>
+                      )}
+
+                      {/* FOOTER */}
 
                       <div className="
                         mt-6
@@ -734,36 +590,27 @@ function Notes() {
                       ">
                         <span className="text-xs text-zinc-600">
                           {formatDate(
-                            note.updatedAt ||
-                              note.createdAt
+                            note.updatedAt || note.createdAt
                           )}
                         </span>
 
-                        <button
-                          onClick={() =>
-                            navigate(
-                              `/content/${note.id}`
-                            )
-                          }
-                          className="
-                            text-xs
-                            text-zinc-500
-                            hover:text-amber-400
-                          "
-                        >
+                        <span className="
+                          text-xs
+                          text-zinc-600
+                          transition
+                          group-hover:text-amber-400
+                        ">
                           Open →
-                        </button>
+                        </span>
                       </div>
 
-                    </div>
+                    </article>
                   ))}
                 </div>
               )}
 
           </section>
-
         </div>
-
       </div>
     </div>
   );

@@ -9,20 +9,27 @@ const contentSchema=new mongoose.Schema({
               required: true,
               trim: true,
        },
-       link: {
+       content: {
               type: String,
-               trim:true
-       },
+              trim: true
+            },
        type: {
               type: String,
               required: true,
-              enum: ["link", "note", "youtube","video", "pdf", "code"]
+              enum: ["link", "note","videos",]
           },
        tags:
               {
                 type: [String],
                 default: []
               },
+       metadata:{
+              source:String,
+              thumbnail:String,
+              author:String,
+              duration:Number,
+              description:String
+       },
        
        userId:{
               type:mongoose.Types.ObjectId,
@@ -30,7 +37,10 @@ const contentSchema=new mongoose.Schema({
               required:true,
               index:true
        }
-       
+,      isFavorite: {
+              type: Boolean,
+              default: false
+     }
      },
 
      {

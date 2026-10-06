@@ -7,14 +7,36 @@ export const createContent = async (req: Request, res: Response) => {
         const { title, link, type,tags } = req.body;
 
         // Check required fields
+
+        if (!title || !title.trim()) {
+            return res.status(400).json({
+                message: "Title is required",
+                status: "failed"
+            });
+        }
+
+        if (!link || !link.trim()) {
+            return res.status(400).json({
+                message: "Content is required",
+                status: "failed"
+            });
+        }
+
+        if (!type) {
+            return res.status(400).json({
+                message: "Content type is required",
+                status: "failed"
+            });
+        }
+
         
 
         // Create content
         const content = await ContentModel.create({
-            title,
-            link,
+            title:title.trim(),
+            link:link.trim(),
             type,
-            tags,
+            tags:tags || [],
             userId: req.userId
         });
 
@@ -25,11 +47,13 @@ export const createContent = async (req: Request, res: Response) => {
         });
 
     } catch (error) {
-        console.error(error);
+        console.error('Create content Error',error);
 
         return res.status(500).json({
-            message: "Internal server error",
-            status: "failed"
+            message: error instanceof Error
+            ? error.message
+            : "Internal server error",
+        status: "failed"
         });
     }
 };
@@ -94,19 +118,21 @@ export const createContent = async (req: Request, res: Response) => {
     };
 
 
-    export const getOneContent = async (req: Request, res: Response) => {
+    export const getOneContent = async (
+        req: Request,
+        res: Response
+    ) => {
         try {
-          
-            const {contentId} = req.params
+            const { contentId } = req.params;
     
             const content = await ContentModel.findOne({
-                 _id: contentId,
-                 userId:req.userId
+                _id: contentId,
+                userId: req.userId
             }).populate("userId", "name");
     
             if (!content) {
                 return res.status(404).json({
-                    message: "Content  not found",
+                    message: "Content not found",
                     status: "failed"
                 });
             }
@@ -118,6 +144,8 @@ export const createContent = async (req: Request, res: Response) => {
             });
     
         } catch (error) {
+            console.error("Get one content error:", error);
+    
             return res.status(500).json({
                 message: "Internal server error",
                 status: "failed"

@@ -243,25 +243,9 @@ function Sidebar() {
               }
             />
 
-            <SidebarItem
-              to="/Code"
-              label="Code"
-              icon={
-                <span className="text-emerald-400">
-                  <FaCode size={15} />
-                </span>
-              }
-            />
+            
 
-            <SidebarItem
-              to="/pdf"
-              label="PDF"
-              icon={
-                <span className="text-orange-400">
-                  <FaFilePdf size={15} />
-                </span>
-              }
-            />
+           
           </SidebarSection>
 
           <div className="mt-7 border-t border-zinc-800/70 pt-4">
