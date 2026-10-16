@@ -1,10 +1,14 @@
+
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { GoogleLogin } from "@react-oauth/google";
-import GoogleLoginButton from "../../Components/Home/GoogleLoginButton"
+import { GoogleLogin, type CredentialResponse } from "@react-oauth/google";
 import { SubmitButton } from "../../Components/Home/SubmitButton";
-import { signin,getuser } from "../../services/authService";
-import{useAuth} from "../../context/useAuth"
+import {
+  signin,
+  googleSignin,
+  getuser,
+} from "../../services/authService";
+import { useAuth } from "../../context/useAuth";
 
 interface SignInFormData {
   email: string;
@@ -13,7 +17,7 @@ interface SignInFormData {
 
 const SignIn = () => {
   const navigate = useNavigate();
-  const {setUser} =useAuth()
+  const { setUser } = useAuth();
 
   const [formData, setFormData] = useState<SignInFormData>({
     email: "",
@@ -36,6 +40,37 @@ const SignIn = () => {
     }
   };
 
+  const validateForm = () => {
+    const email = formData.email.trim();
+    const password = formData.password;
+
+    if (!email) {
+      return "Email is required.";
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return "Please enter a valid email.";
+    }
+
+    if (!password) {
+      return "Password is required.";
+    }
+
+    return "";
+  };
+
+  const loadUser = async () => {
+    const userResponse = await getuser();
+
+    console.log("USER RESPONSE:", userResponse);
+
+    if (!userResponse?.user) {
+      throw new Error("Unable to get logged-in user.");
+    }
+
+    setUser(userResponse.user);
+  };
+
   const handleSubmit = async (
     e: React.FormEvent<HTMLFormElement>
   ) => {
@@ -44,45 +79,94 @@ const SignIn = () => {
     if (loading) return;
 
     setError("");
+
+    const validationError = validateForm();
+
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
     setLoading(true);
 
     try {
-      const response = await signin(formData);
+      const response = await signin({
+        email: formData.email.trim(),
+        password: formData.password,
+      });
 
-      localStorage.setItem("token", response.token)
+      console.log("SIGN IN RESPONSE:", response);
 
-        const userResponse = await getuser();
+      if (!response?.token) {
+        throw new Error("No authentication token received.");
+      }
 
-  setUser(userResponse.user);
+      localStorage.setItem("token", response.token);
 
+      await loadUser();
 
-
-      console.log("Sign in successful:", response);
-
+      console.log("Sign in successful");
       navigate("/home");
-    } catch (error: unknown) {
+    } catch (error: any) {
       console.error("Sign in failed:", error);
 
-      if (
-        typeof error === "object" &&
-        error !== null &&
-        "response" in error
-      ) {
-        const axiosError = error as {
-          response?: {
-            data?: {
-              message?: string;
-            };
-          };
-        };
+      const message =
+        error?.response?.data?.message ||
+        error?.message ||
+        "Invalid email or password.";
 
-        setError(
-          axiosError.response?.data?.message ||
-            "Invalid email or password."
-        );
-      } else {
-        setError("Something went wrong. Please try again.");
+      setError(message);
+      localStorage.removeItem("token");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGoogleLogin = async (
+    credentialResponse: CredentialResponse
+  ) => {
+    if (loading) return;
+
+    setError("");
+    setLoading(true);
+
+    try {
+      console.log("GOOGLE RESPONSE:", credentialResponse);
+
+      const googleCredential = credentialResponse.credential;
+
+      if (!googleCredential) {
+        throw new Error("Google did not return a credential.");
       }
+
+      const response = await googleSignin(googleCredential);
+
+      console.log("GOOGLE BACKEND RESPONSE:", response);
+
+      if (!response?.token) {
+        throw new Error(
+          "Google login succeeded, but no authentication token was received."
+        );
+      }
+
+      localStorage.setItem("token", response.token);
+
+      console.log("JWT saved:", response.token);
+
+      await loadUser();
+
+      console.log("Google login successful");
+      navigate("/home");
+    } catch (error: any) {
+      console.error("Google login failed:", error);
+
+      const message =
+        error?.response?.data?.message ||
+        error?.message ||
+        "Google login failed. Please try again.";
+
+      setError(message);
+      localStorage.removeItem("token");
     } finally {
       setLoading(false);
     }
@@ -91,8 +175,6 @@ const SignIn = () => {
   return (
     <div className="min-h-screen bg-[#0B0B0D] flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
-
-        {/* Header */}
         <div className="text-center mb-6">
           <h1 className="text-2xl font-bold text-white">
             🧠 Second Brain
@@ -103,38 +185,17 @@ const SignIn = () => {
           </p>
         </div>
 
-        {/* Card */}
         <div className="bg-[#141416] border border-gray-800 rounded-xl p-6">
-
-          {/* Title */}
-          <div className="mb-5">
-            <h2 className="text-lg font-semibold text-white">
-              Sign in
-            </h2>
-
-            <p className="text-gray-500 text-xs mt-1">
-              Continue to your second brain.
-            </p>
-          </div>
-
-          {/* Error */}
           {error && (
             <div
               role="alert"
               className="mb-4 rounded-lg border border-red-900/50 bg-red-950/30 px-3 py-2.5"
             >
-              <p className="text-xs text-red-400">
-                {error}
-              </p>
+              <p className="text-xs text-red-400">{error}</p>
             </div>
           )}
 
-          {/* Form */}
-          <form
-            onSubmit={handleSubmit}
-            className="space-y-3"
-          >
-            {/* Email */}
+          <form onSubmit={handleSubmit} className="space-y-3">
             <div>
               <label
                 htmlFor="email"
@@ -151,24 +212,11 @@ const SignIn = () => {
                 value={formData.email}
                 onChange={handleChange}
                 autoComplete="email"
-                required
                 disabled={loading}
-                className="
-                  w-full px-3 py-2.5 rounded-lg
-                  bg-[#0B0B0D]
-                  border border-gray-800
-                  text-white text-sm
-                  placeholder:text-gray-600
-                  outline-none
-                  transition
-                  focus:border-amber-500
-                  disabled:opacity-50
-                  disabled:cursor-not-allowed
-                "
+                className="w-full px-3 py-2.5 rounded-lg bg-[#0B0B0D] border border-gray-800 text-white text-sm placeholder:text-gray-600 outline-none transition focus:border-amber-500 disabled:opacity-50 disabled:cursor-not-allowed"
               />
             </div>
 
-            {/* Password */}
             <div>
               <label
                 htmlFor="password"
@@ -185,115 +233,47 @@ const SignIn = () => {
                 value={formData.password}
                 onChange={handleChange}
                 autoComplete="current-password"
-                required
                 disabled={loading}
-                className="
-                  w-full px-3 py-2.5 rounded-lg
-                  bg-[#0B0B0D]
-                  border border-gray-800
-                  text-white text-sm
-                  placeholder:text-gray-600
-                  outline-none
-                  transition
-                  focus:border-amber-500
-                  disabled:opacity-50
-                  disabled:cursor-not-allowed
-                "
+                className="w-full px-3 py-2.5 rounded-lg bg-[#0B0B0D] border border-gray-800 text-white text-sm placeholder:text-gray-600 outline-none transition focus:border-amber-500 disabled:opacity-50 disabled:cursor-not-allowed"
               />
             </div>
 
-            {/* Forgot Password */}
             <div className="text-right">
               <button
                 type="button"
                 disabled={loading}
-                className="
-                  text-xs text-amber-500
-                  hover:text-amber-400
-                  transition
-                  disabled:opacity-50
-                "
+                className="text-xs text-amber-500 hover:text-amber-400 transition disabled:opacity-50"
               >
                 Forgot password?
               </button>
             </div>
 
-            {/* Submit */}
-            <SubmitButton
-  title="Sign in"
-  loading={loading}
-/>
+            <SubmitButton title="Sign in" loading={loading} />
           </form>
 
-          {/* Divider */}
           <div className="flex items-center gap-3 my-5">
             <div className="h-px bg-gray-800 flex-1" />
 
-            <span className="text-xs text-gray-600">
-              OR
-            </span>
+            <span className="text-xs text-gray-600">OR</span>
 
             <div className="h-px bg-gray-800 flex-1" />
           </div>
 
-          {/* Google */}
-       
-           
-          <GoogleLogin
-  onSuccess={async (credentialResponse) => {
-    try {
-      console.log("GOOGLE RESPONSE:", credentialResponse);
+          <div className="flex justify-center">
+            <GoogleLogin
+              onSuccess={handleGoogleLogin}
+              onError={() => {
+                console.error("Google Login Failed");
+                setError("Google login failed. Please try again.");
+              }}
+            />
+          </div>
 
-      const response = await fetch(
-        "http://localhost:8000/api/v1/auth/google",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            credential: credentialResponse.credential,
-          }),
-        }
-      );
-
-      const data = await response.json();
-
-      console.log("BACKEND RESPONSE:", data);
-
-      if (!response.ok) {
-        throw new Error(data.message);
-      }
-
-      localStorage.setItem("token", data.token);
-
-      console.log("Google login successful");
-
-      // Navigate to dashboard
-      // navigate("/dashboard");
-
-    } catch (error) {
-      console.error("Google login failed:", error);
-    }
-  }}
-  onError={() => {
-    console.log("Google Login Failed");
-  }}
-/>
-       
-         
-
-          {/* Sign Up */}
           <p className="text-center text-gray-500 text-xs mt-5">
             Don't have an account?{" "}
-
             <Link
               to="/signup"
-              className="
-                text-amber-500
-                hover:text-amber-400
-                transition
-              "
+              className="text-amber-500 hover:text-amber-400 transition"
             >
               Sign up
             </Link>

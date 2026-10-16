@@ -4,6 +4,7 @@ import {
     signup,
     signin,
     getuser,
+    googleSignup,
     googleLogin 
 } from "../controllers/auth.controller";
 
@@ -26,6 +27,8 @@ router.post(
 
 router.post("/google",
     googleLogin)
+
+router.post("/google/signup",googleSignup)
 
 
 router.post(

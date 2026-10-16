@@ -63,7 +63,9 @@ export const createContent = async (req: Request, res: Response) => {
         try {
             const userId = req.userId;
             const {tag,search} =req.query
-            // console.log("QUERY:", req.query);
+            console.log("QUERY:", req.query);
+            console.log("GET CONTENT - userId:", userId);
+            console.log("🚀 Deployment successful!");
 
             const filter:any={
                 userId:userId
@@ -248,37 +250,46 @@ export const createContent = async (req: Request, res: Response) => {
 }
 
 
-export const deleteContent=async (req:Request,res:Response)=>{
 
-    try{ 
-       const contentId=req.body.contentId;
-
-       const result = await ContentModel.deleteOne({
+export const deleteContent = async (req: Request, res: Response) => {
+    try {
+      const contentId = req.params.contentId;
+  
+      console.log("DELETE CONTENT ID:", contentId);
+  
+      if (!contentId) {
+        return res.status(400).json({
+          message: "Content ID is required",
+          status: "failed",
+        });
+      }
+  
+      const result = await ContentModel.deleteOne({
         _id: contentId,
-         userId:req.userId
-     });
+        userId: req.userId,
+      });
+  
+      if (result.deletedCount === 0) {
+        return res.status(404).json({
+          message: "Content not found or you are not authorized to delete it",
+          status: "failed",
+        });
+      }
+  
+      return res.status(200).json({
+        message: "Content deleted successfully",
+        status: "success",
+      });
+    } catch (error) {
+      console.error("DELETE CONTENT ERROR:", error);
+  
+      return res.status(500).json({
+        message: "Internal server error",
+        status: "failed",
+      });
+    }
+  };
 
-     if(result.deletedCount === 0){
-       return res.status(404).json({
-           message:"content not found or you are not authorized to delete it",
-           status:"failed" 
-       });
-   }
 
-       res.json({
-           message:"Content deleted successfully",
-           status:"success"
-       });
-     
- 
-      
- }
- catch (error) {
-   return res.status(500).json({
-       message: "Internal server error",
-       status: "failed"
-   });
-}
-}
 
    
