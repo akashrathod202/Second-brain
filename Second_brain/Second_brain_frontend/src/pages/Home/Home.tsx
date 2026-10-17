@@ -1,6 +1,7 @@
 import HomeHeader from "../../Components/Home/HomeHeader";
 import HomeHero from "./HomeHero";
 import HomeStats from "./HomeStats";
+import Footer from "./Footer"
 import RecentItems from "./RecentItems";
 import QuickActions from "./QuickActions";
 
@@ -18,8 +19,10 @@ const Home = () => {
         <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
           <RecentItems />
           <QuickActions />
-        </div>
+              
 
+        </div>
+        <Footer/>
       </div>
     </div>
   );
