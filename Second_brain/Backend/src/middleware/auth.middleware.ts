@@ -57,7 +57,7 @@ const authMiddleware = (
         ) as JwtPayload;
 
         // 5. Store user ID in request
-        // console.log("DECODED TOKEN:", decoded);
+        console.log("DECODED TOKEN:", decoded);
         req.userId = decoded.id;
 
         // 6. Continue to endpoint

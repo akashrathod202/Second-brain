@@ -8,6 +8,7 @@ import connectDB from "./config/db";
 import authRoutes from "./routes/auth.routes";
 import ContentRoutes from "./routes/content.routes";
 import shareRoutes from "./routes/share.routes";
+import aiRoutes from "./routes/ai.routes";
 
 import { generalLimiter } from "./middleware/rateLimit.middleware";
 
@@ -67,6 +68,7 @@ app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/content", ContentRoutes);
 
 app.use("/api/v1/share", shareRoutes);
+app.use("/api/v1/ai", aiRoutes);
 
 /* =========================
    Start Server

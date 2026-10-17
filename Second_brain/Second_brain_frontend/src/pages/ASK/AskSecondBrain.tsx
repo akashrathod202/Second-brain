@@ -1,24 +1,87 @@
-import { useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import type { IconType } from "react-icons";
 import {
   FaArrowLeft,
   FaArrowUp,
+  FaArrowUpRightFromSquare,
+  FaBookmark,
+  FaBookOpen,
   FaBrain,
+  FaCheck,
+  FaCircleExclamation,
   FaCopy,
+  FaFileLines,
   FaLightbulb,
+  FaLink,
   FaMagnifyingGlass,
+  FaPenToSquare,
   FaRotateRight,
-  FaUser,
-  FaWandMagicSparkles,
+  FaVideo,
 } from "react-icons/fa6";
 import { useNavigate } from "react-router-dom";
 
+/* =========================================================
+   TYPES
+========================================================= */
+
+type Source = {
+  id: string;
+  title: string;
+  type: string;
+  url?: string;
+};
+
 type Message = {
-  id: number;
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  sources?: Source[];
+};
+
+type AskResult = {
+  answer: string;
+  sources: Source[];
+};
+
+type ChatTurn = {
   role: "user" | "assistant";
   content: string;
 };
 
-const suggestions = [
+type ChatError = {
+  message: string;
+  question: string;
+};
+
+/* =========================================================
+   CONFIGURATION
+========================================================= */
+
+const configuredApiBase =
+  (import.meta.env.VITE_API_URL as string | undefined) ||
+  "http://localhost:8000";
+
+const API_BASE = configuredApiBase
+  .replace(/\/+$/, "")
+  .replace(/\/api\/v1$/i, "");
+
+const ASK_ENDPOINT = `${API_BASE}/api/v1/ai/ask`;
+
+const MAX_TEXTAREA_HEIGHT = 160;
+
+/* =========================================================
+   SUGGESTIONS
+========================================================= */
+
+const SUGGESTIONS: {
+  icon: IconType;
+  text: string;
+}[] = [
   {
     icon: FaMagnifyingGlass,
     text: "Find my React notes",
@@ -28,10 +91,824 @@ const suggestions = [
     text: "Explain what I saved about APIs",
   },
   {
-    icon: FaBrain,
-    text: "What did I save about Node.js?",
+    icon: FaBookOpen,
+    text: "Summarize my Node.js resources",
+  },
+  {
+    icon: FaLink,
+    text: "Find useful links I saved",
   },
 ];
+
+const SOURCE_TYPES: Record<
+  string,
+  {
+    label: string;
+    icon: IconType;
+  }
+> = {
+  link: {
+    label: "Link",
+    icon: FaLink,
+  },
+  note: {
+    label: "Note",
+    icon: FaFileLines,
+  },
+  video: {
+    label: "Video",
+    icon: FaVideo,
+  },
+  videos: {
+    label: "Video",
+    icon: FaVideo,
+  },
+  article: {
+    label: "Article",
+    icon: FaBookOpen,
+  },
+};
+
+/* =========================================================
+   HELPERS
+========================================================= */
+
+let idCounter = 0;
+
+const nextId = () => `m-${Date.now()}-${idCounter++}`;
+
+const cx = (
+  ...classes: Array<string | false | null | undefined>
+) => classes.filter(Boolean).join(" ");
+
+const isRecord = (
+  value: unknown
+): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const isSafeUrl = (value: string) => {
+  try {
+    const { protocol } = new URL(value);
+
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+};
+
+const getSourceMeta = (type: string) => {
+  const key = type.toLowerCase();
+
+  return (
+    SOURCE_TYPES[key] ?? {
+      label: key
+        ? key.charAt(0).toUpperCase() + key.slice(1)
+        : "Item",
+      icon: FaBookmark,
+    }
+  );
+};
+
+const focusRing =
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950";
+
+/* =========================================================
+   API ERROR HANDLING
+========================================================= */
+
+class ApiError extends Error {
+  status?: number;
+
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+const messageForStatus = (status: number) => {
+  if (status === 401 || status === 403) {
+    return "Your session has expired. Sign in again to continue.";
+  }
+
+  if (status === 429) {
+    return "Too many requests. Wait a moment, then try again.";
+  }
+
+  if (status >= 500) {
+    return "The AI service ran into a problem. Try again in a moment.";
+  }
+
+  return "The request could not be completed. Try again.";
+};
+
+const readServerMessage = (
+  payload: unknown
+): string | null => {
+  if (!isRecord(payload)) {
+    return null;
+  }
+
+  const candidate = payload.message ?? payload.error;
+
+  return typeof candidate === "string" && candidate.trim()
+    ? candidate
+    : null;
+};
+
+const normalizeSources = (raw: unknown): Source[] => {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw.filter(isRecord).map((item, index) => {
+    const id = item._id ?? item.id ?? index;
+    const title = item.title ?? item.name;
+    const type = item.type ?? item.contentType;
+    const url = item.url ?? item.link;
+
+    return {
+      id: String(id),
+      title:
+        typeof title === "string" && title.trim()
+          ? title
+          : "Untitled item",
+      type: typeof type === "string" ? type : "",
+      url:
+        typeof url === "string" && isSafeUrl(url)
+          ? url
+          : undefined,
+    };
+  });
+};
+
+/* =========================================================
+   API REQUEST
+   IMPORTANT:
+   - Read JWT from localStorage.
+   - Send Authorization: Bearer <token>.
+   - Use this same function for sending and retrying.
+========================================================= */
+
+async function askSecondBrain(
+  question: string,
+  history: ChatTurn[],
+  signal: AbortSignal
+): Promise<AskResult> {
+  const token = localStorage.getItem("token");
+
+  if (!token) {
+    throw new ApiError(
+      "Your session is missing. Please sign in again.",
+      401
+    );
+  }
+
+  const response = await fetch(ASK_ENDPOINT, {
+    method: "POST",
+
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+
+    credentials: "include",
+
+    body: JSON.stringify({
+      question,
+      history,
+    }),
+
+    signal,
+  });
+
+  const payload: unknown = await response
+    .json()
+    .catch(() => null);
+
+  if (!response.ok) {
+    throw new ApiError(
+      readServerMessage(payload) ??
+        messageForStatus(response.status),
+      response.status
+    );
+  }
+
+  const data =
+    isRecord(payload) && isRecord(payload.data)
+      ? payload.data
+      : payload;
+
+  if (!isRecord(data)) {
+    throw new ApiError(
+      "The AI service returned an unexpected response."
+    );
+  }
+
+  const answer =
+    data.answer ?? data.response ?? data.message;
+
+  if (
+    typeof answer !== "string" ||
+    !answer.trim()
+  ) {
+    throw new ApiError(
+      "The AI service returned an empty answer."
+    );
+  }
+
+  return {
+    answer,
+    sources: normalizeSources(data.sources),
+  };
+}
+
+const getErrorMessage = (error: unknown) => {
+  if (error instanceof ApiError) {
+    return error.message;
+  }
+
+  if (error instanceof TypeError) {
+    return "Could not reach the server. Check your connection and try again.";
+  }
+
+  return "Something went wrong. Try again.";
+};
+
+/* =========================================================
+   AVATAR
+========================================================= */
+
+function Avatar() {
+  return (
+    <div
+      aria-hidden="true"
+      className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-zinc-800 bg-zinc-900"
+    >
+      <FaBrain
+        size={13}
+        className="text-amber-400"
+      />
+    </div>
+  );
+}
+
+/* =========================================================
+   STATUS INDICATOR
+========================================================= */
+
+function StatusIndicator({
+  busy,
+}: {
+  busy: boolean;
+}) {
+  return (
+    <div
+      role="status"
+      className="flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-xs text-zinc-400"
+    >
+      <span
+        aria-hidden="true"
+        className={cx(
+          "h-1.5 w-1.5 rounded-full",
+          busy
+            ? "bg-amber-400 motion-safe:animate-pulse"
+            : "bg-emerald-500"
+        )}
+      />
+
+      <span>{busy ? "Thinking…" : "Ready"}</span>
+    </div>
+  );
+}
+
+/* =========================================================
+   HEADER
+========================================================= */
+
+type HeaderProps = {
+  busy: boolean;
+  canReset: boolean;
+  onBack: () => void;
+  onReset: () => void;
+};
+
+function Header({
+  busy,
+  canReset,
+  onBack,
+  onReset,
+}: HeaderProps) {
+  return (
+    <header className="shrink-0 border-b border-zinc-800 bg-zinc-950">
+      <div className="mx-auto flex h-14 w-full max-w-3xl items-center justify-between gap-3 px-4 sm:px-6">
+        <div className="flex min-w-0 items-center gap-3">
+          <button
+            type="button"
+            onClick={onBack}
+            aria-label="Go back"
+            className={cx(
+              "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-zinc-400 transition-colors hover:bg-zinc-900 hover:text-white",
+              focusRing
+            )}
+          >
+            <FaArrowLeft size={13} />
+          </button>
+
+          <div className="flex min-w-0 items-center gap-2.5">
+            <div
+              aria-hidden="true"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-zinc-800 bg-zinc-900"
+            >
+              <FaBrain
+                size={13}
+                className="text-amber-400"
+              />
+            </div>
+
+            <div className="min-w-0 leading-tight">
+              <p className="truncate text-sm font-semibold text-zinc-100">
+                SecondBrain
+              </p>
+
+              <p className="hidden truncate text-xs text-zinc-500 sm:block">
+                AI Knowledge Assistant
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-2">
+          <StatusIndicator busy={busy} />
+
+          <button
+            type="button"
+            onClick={onReset}
+            disabled={!canReset}
+            className={cx(
+              "inline-flex h-9 items-center gap-2 rounded-lg border border-zinc-800 px-3 text-sm text-zinc-300 transition-colors hover:bg-zinc-900 hover:text-white disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-zinc-300",
+              focusRing
+            )}
+          >
+            <FaPenToSquare
+              size={12}
+              aria-hidden="true"
+            />
+
+            <span className="hidden sm:inline">
+              New chat
+            </span>
+
+            <span className="sr-only sm:hidden">
+              New chat
+            </span>
+          </button>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+/* =========================================================
+   WELCOME SCREEN
+========================================================= */
+
+function Welcome({
+  onPick,
+}: {
+  onPick: (text: string) => void;
+}) {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center py-10 text-center">
+      <div
+        aria-hidden="true"
+        className="flex h-12 w-12 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900"
+      >
+        <FaBrain
+          size={20}
+          className="text-amber-400"
+        />
+      </div>
+
+      <h1 className="mt-6 text-2xl font-semibold tracking-tight text-zinc-50 sm:text-3xl">
+        Your knowledge, one question away.
+      </h1>
+
+      <p className="mt-3 max-w-md text-sm leading-6 text-zinc-400">
+        Chat naturally, ask general questions, or let
+        SecondBrain use your saved notes, links, and
+        resources when they are relevant.
+      </p>
+
+      <ul className="mt-8 grid w-full max-w-xl gap-2 text-left sm:grid-cols-2">
+        {SUGGESTIONS.map(({ icon: Icon, text }) => (
+          <li key={text}>
+            <button
+              type="button"
+              onClick={() => onPick(text)}
+              className={cx(
+                "flex w-full items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3.5 py-3 text-sm text-zinc-300 transition-colors hover:border-zinc-700 hover:bg-zinc-900 hover:text-white",
+                focusRing
+              )}
+            >
+              <Icon
+                size={13}
+                aria-hidden="true"
+                className="shrink-0 text-zinc-500"
+              />
+
+              <span>{text}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/* =========================================================
+   SOURCE CARD
+========================================================= */
+
+function SourceCard({
+  source,
+}: {
+  source: Source;
+}) {
+  const {
+    label,
+    icon: Icon,
+  } = getSourceMeta(source.type);
+
+  const body = (
+    <>
+      <span
+        aria-hidden="true"
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-zinc-800 text-zinc-400"
+      >
+        <Icon size={12} />
+      </span>
+
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm text-zinc-200">
+          {source.title}
+        </span>
+
+        <span className="block text-xs text-zinc-500">
+          {label}
+        </span>
+      </span>
+
+      {source.url && (
+        <FaArrowUpRightFromSquare
+          size={10}
+          aria-hidden="true"
+          className="shrink-0 text-zinc-600 transition-colors group-hover:text-zinc-300"
+        />
+      )}
+    </>
+  );
+
+  const base =
+    "group flex w-full items-center gap-2.5 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-left sm:max-w-[16rem]";
+
+  if (!source.url) {
+    return (
+      <div className={base}>
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <a
+      href={source.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={cx(
+        base,
+        "transition-colors hover:border-zinc-700 hover:bg-zinc-800/70",
+        focusRing
+      )}
+    >
+      {body}
+
+      <span className="sr-only">
+        (opens in a new tab)
+      </span>
+    </a>
+  );
+}
+
+/* =========================================================
+   SOURCE LIST
+========================================================= */
+
+function SourceList({
+  sources,
+}: {
+  sources: Source[];
+}) {
+  if (sources.length === 0) {
+    return null;
+  }
+
+  return (
+    <section
+      aria-label="Sources"
+      className="mt-4"
+    >
+      <p className="mb-2 text-xs font-medium text-zinc-500">
+        Sources ({sources.length})
+      </p>
+
+      <ul className="flex flex-wrap gap-2">
+        {sources.map((source) => (
+          <li
+            key={source.id}
+            className="w-full sm:w-auto"
+          >
+            <SourceCard source={source} />
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/* =========================================================
+   MESSAGE
+========================================================= */
+
+type MessageItemProps = {
+  message: Message;
+  copied: boolean;
+  onCopy: (id: string, content: string) => void;
+};
+
+function MessageItem({
+  message,
+  copied,
+  onCopy,
+}: MessageItemProps) {
+  if (message.role === "user") {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-zinc-800 px-4 py-2.5 text-sm leading-6 text-zinc-100 sm:max-w-[75%]">
+          <span className="sr-only">
+            You:
+          </span>
+
+          {message.content}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex gap-3">
+      <Avatar />
+
+      <div className="min-w-0 flex-1">
+        <div className="whitespace-pre-wrap break-words text-sm leading-7 text-zinc-200">
+          <span className="sr-only">
+            SecondBrain:
+          </span>
+
+          {message.content}
+        </div>
+
+        <SourceList
+          sources={message.sources ?? []}
+        />
+
+        <button
+          type="button"
+          onClick={() =>
+            onCopy(message.id, message.content)
+          }
+          className={cx(
+            "mt-3 inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-zinc-500 transition-colors hover:bg-zinc-900 hover:text-zinc-200",
+            focusRing
+          )}
+        >
+          {copied ? (
+            <FaCheck
+              size={10}
+              aria-hidden="true"
+              className="text-emerald-500"
+            />
+          ) : (
+            <FaCopy
+              size={10}
+              aria-hidden="true"
+            />
+          )}
+
+          <span aria-live="polite">
+            {copied
+              ? "Copied"
+              : "Copy response"}
+          </span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================
+   THINKING INDICATOR
+========================================================= */
+
+function ThinkingIndicator() {
+  return (
+    <div className="flex items-center gap-3">
+      <Avatar />
+
+      <div
+        className="flex items-center gap-1.5 py-2"
+        aria-hidden="true"
+      >
+        {["-0.3s", "-0.15s", "0s"].map((delay) => (
+          <span
+            key={delay}
+            style={{
+              animationDelay: delay,
+            }}
+            className="h-1.5 w-1.5 rounded-full bg-zinc-500 motion-safe:animate-bounce"
+          />
+        ))}
+      </div>
+
+      <span className="sr-only">
+        SecondBrain is thinking
+      </span>
+    </div>
+  );
+}
+
+/* =========================================================
+   ERROR NOTICE
+========================================================= */
+
+type ErrorNoticeProps = {
+  error: ChatError;
+  disabled: boolean;
+  onRetry: () => void;
+};
+
+function ErrorNotice({
+  error,
+  disabled,
+  onRetry,
+}: ErrorNoticeProps) {
+  return (
+    <div
+      role="alert"
+      className="flex items-start gap-3 rounded-xl border border-red-500/30 bg-red-500/5 p-4"
+    >
+      <FaCircleExclamation
+        size={14}
+        aria-hidden="true"
+        className="mt-0.5 shrink-0 text-red-400"
+      />
+
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium text-zinc-100">
+          Could not get an answer
+        </p>
+
+        <p className="mt-1 text-sm leading-6 text-zinc-400">
+          {error.message}
+        </p>
+
+        <button
+          type="button"
+          onClick={onRetry}
+          disabled={disabled}
+          className={cx(
+            "mt-3 inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50",
+            focusRing
+          )}
+        >
+          <FaRotateRight
+            size={10}
+            aria-hidden="true"
+          />
+
+          Try again
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================
+   MESSAGE COMPOSER
+========================================================= */
+
+type ComposerProps = {
+  value: string;
+  loading: boolean;
+  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+};
+
+function Composer({
+  value,
+  loading,
+  textareaRef,
+  onChange,
+  onSubmit,
+}: ComposerProps) {
+  const canSend =
+    value.trim().length > 0 && !loading;
+
+  const handleKeyDown = (
+    e: React.KeyboardEvent<HTMLTextAreaElement>
+  ) => {
+    if (
+      e.key === "Enter" &&
+      !e.shiftKey &&
+      !e.nativeEvent.isComposing
+    ) {
+      e.preventDefault();
+      onSubmit();
+    }
+  };
+
+  return (
+    <div className="shrink-0 border-t border-zinc-800 bg-zinc-950 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
+      <div className="mx-auto w-full max-w-3xl px-4 sm:px-6">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            onSubmit();
+          }}
+          className="flex items-end gap-2 rounded-2xl border border-zinc-800 bg-zinc-900 p-2 transition-colors focus-within:border-amber-400/50"
+        >
+          <label
+            htmlFor="ask-secondbrain-input"
+            className="sr-only"
+          >
+            Ask your Second Brain
+          </label>
+
+          <textarea
+            id="ask-secondbrain-input"
+            ref={textareaRef}
+            value={value}
+            onChange={(e) =>
+              onChange(e.target.value)
+            }
+            onKeyDown={handleKeyDown}
+            rows={1}
+            placeholder="Ask about your saved notes, links, and resources"
+            className="max-h-40 min-h-[40px] flex-1 resize-none bg-transparent px-2.5 py-2 text-sm leading-6 text-zinc-100 outline-none placeholder:text-zinc-500"
+          />
+
+          <button
+            type="submit"
+            disabled={!canSend}
+            aria-label="Send message"
+            className={cx(
+              "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-400 text-zinc-950 transition-colors hover:bg-amber-300 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-600",
+              focusRing
+            )}
+          >
+            <FaArrowUp
+              size={13}
+              aria-hidden="true"
+            />
+          </button>
+        </form>
+
+        <div className="mt-2 flex items-center justify-between gap-4 px-1 text-xs text-zinc-500">
+          <p>
+            SecondBrain can use your saved content when
+            relevant. Check important details.
+          </p>
+
+          <p className="hidden shrink-0 sm:block">
+            <kbd className="font-sans text-zinc-400">
+              Enter
+            </kbd>{" "}
+            to send,{" "}
+            <kbd className="font-sans text-zinc-400">
+              Shift + Enter
+            </kbd>{" "}
+            for a new line
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================
+   MAIN PAGE
+========================================================= */
 
 const AskSecondBrain = () => {
   const navigate = useNavigate();
@@ -39,104 +916,183 @@ const AskSecondBrain = () => {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [error, setError] = useState<ChatError | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef =
+    useRef<HTMLTextAreaElement>(null);
 
-  /*
-   * Scroll to latest message
-   */
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({
-      behavior: "smooth",
-    });
-  }, [messages, loading]);
+  const messagesEndRef =
+    useRef<HTMLDivElement>(null);
 
-  /*
-   * Focus input when page opens
-   */
+  const controllerRef =
+    useRef<AbortController | null>(null);
+
+  const copyTimerRef =
+    useRef<number | undefined>(undefined);
+
+  const hasConversation =
+    messages.length > 0 ||
+    loading ||
+    error !== null;
+
+  /* Focus input when the page opens */
   useEffect(() => {
     textareaRef.current?.focus();
   }, []);
 
-  /*
-   * Handle textarea input
-   */
-  const handleInputChange = (
-    e: React.ChangeEvent<HTMLTextAreaElement>
-  ) => {
-    setInput(e.target.value);
+  /* Cancel requests and timers on unmount */
+  useEffect(() => {
+    return () => {
+      controllerRef.current?.abort();
 
-    const textarea = e.target;
+      window.clearTimeout(copyTimerRef.current);
+    };
+  }, []);
 
-    textarea.style.height = "auto";
-    textarea.style.height = `${Math.min(
-      textarea.scrollHeight,
-      160
+  /* Automatically resize textarea */
+  useEffect(() => {
+    const el = textareaRef.current;
+
+    if (!el) {
+      return;
+    }
+
+    el.style.height = "auto";
+
+    el.style.height = `${Math.min(
+      el.scrollHeight,
+      MAX_TEXTAREA_HEIGHT
     )}px`;
-  };
+  }, [input]);
 
-  /*
-   * Send message
-   */
-  const handleSend = async () => {
+  /* Scroll to the latest message */
+  useEffect(() => {
+    const reduceMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)"
+    ).matches;
+
+    messagesEndRef.current?.scrollIntoView({
+      behavior: reduceMotion ? "auto" : "smooth",
+      block: "end",
+    });
+  }, [messages, loading, error]);
+
+  /* =======================================================
+     SEND QUESTION
+
+     Every request goes through askSecondBrain().
+     This prevents the main send and retry logic from
+     using different authentication headers.
+  ======================================================= */
+
+  const submitQuestion = useCallback(
+    async (question: string) => {
+      controllerRef.current?.abort();
+
+      const controller = new AbortController();
+
+      controllerRef.current = controller;
+
+      setError(null);
+      setLoading(true);
+
+      /*
+       * Exclude the last user message if it is the question
+       * being retried. The question is sent separately.
+       */
+      const history: ChatTurn[] = messages
+        .filter(
+          (message, index) =>
+            !(
+              index === messages.length - 1 &&
+              message.role === "user" &&
+              message.content === question
+            )
+        )
+        .slice(-10)
+        .map(({ role, content }) => ({
+          role,
+          content,
+        }));
+
+      try {
+        const result = await askSecondBrain(
+          question,
+          history,
+          controller.signal
+        );
+
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: nextId(),
+            role: "assistant",
+            content: result.answer,
+            sources: result.sources,
+          },
+        ]);
+      } catch (err) {
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        setError({
+          message: getErrorMessage(err),
+          question,
+        });
+      } finally {
+        if (controllerRef.current === controller) {
+          controllerRef.current = null;
+          setLoading(false);
+        }
+      }
+    },
+    [messages]
+  );
+
+  /* =======================================================
+     SEND MESSAGE
+  ======================================================= */
+
+  const handleSend = () => {
     const question = input.trim();
 
-    if (!question || loading) return;
+    if (!question || loading) {
+      return;
+    }
 
-    const userMessage: Message = {
-      id: Date.now(),
-      role: "user",
-      content: question,
-    };
-
-    setMessages((prev) => [...prev, userMessage]);
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: nextId(),
+        role: "user",
+        content: question,
+      },
+    ]);
 
     setInput("");
+    setError(null);
 
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-    }
-
-    setLoading(true);
-
-    /*
-     * Temporary frontend response.
-     *
-     * Later replace this with:
-     *
-     * POST /api/v1/ai/ask
-     */
-    setTimeout(() => {
-      const assistantMessage: Message = {
-        id: Date.now() + 1,
-        role: "assistant",
-        content:
-          "I’m ready to search through your Second Brain. Once we connect the AI backend, I’ll find the most relevant saved content and answer your question using your knowledge base.",
-      };
-
-      setMessages((prev) => [...prev, assistantMessage]);
-
-      setLoading(false);
-    }, 1200);
+    void submitQuestion(question);
   };
 
-  /*
-   * Enter = send
-   * Shift + Enter = new line
-   */
-  const handleKeyDown = (
-    e: React.KeyboardEvent<HTMLTextAreaElement>
-  ) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
+  /* =======================================================
+     RETRY FAILED REQUEST
+  ======================================================= */
+
+  const handleRetry = () => {
+    if (!error || loading) {
+      return;
     }
+
+    void submitQuestion(error.question);
   };
 
-  /*
-   * Suggestion click
-   */
+  /* =======================================================
+     SUGGESTION BUTTON
+  ======================================================= */
+
   const handleSuggestion = (text: string) => {
     setInput(text);
 
@@ -145,663 +1101,111 @@ const AskSecondBrain = () => {
     });
   };
 
-  /*
-   * Copy AI response
-   */
-  const copyMessage = async (content: string) => {
+  /* =======================================================
+     COPY RESPONSE
+  ======================================================= */
+
+  const handleCopy = async (
+    id: string,
+    content: string
+  ) => {
     try {
       await navigator.clipboard.writeText(content);
+
+      setCopiedId(id);
+
+      window.clearTimeout(copyTimerRef.current);
+
+      copyTimerRef.current = window.setTimeout(() => {
+        setCopiedId(null);
+      }, 1800);
     } catch {
       console.error("Failed to copy message");
     }
   };
 
-  /*
-   * Clear conversation
-   */
+  /* =======================================================
+     CLEAR CHAT
+  ======================================================= */
+
   const clearChat = () => {
+    controllerRef.current?.abort();
+
+    controllerRef.current = null;
+
     setMessages([]);
+    setError(null);
     setInput("");
+    setLoading(false);
 
     requestAnimationFrame(() => {
       textareaRef.current?.focus();
     });
   };
 
+  /* =======================================================
+     RENDER
+  ======================================================= */
+
   return (
-    <main className="relative flex min-h-screen flex-col overflow-hidden bg-[#09090b] text-white">
-      {/* =====================================================
-          BACKGROUND
-      ====================================================== */}
+    <div className="flex h-[100dvh] flex-col bg-zinc-950 text-zinc-100">
+      <Header
+        busy={loading}
+        canReset={
+          hasConversation || input.length > 0
+        }
+        onBack={() => navigate(-1)}
+        onReset={clearChat}
+      />
 
-      <div className="pointer-events-none fixed inset-0 overflow-hidden">
-        {/* Grid */}
-        <div
-          className="
-            absolute inset-0 opacity-[0.025]
-            [background-image:linear-gradient(#fff_1px,transparent_1px),linear-gradient(90deg,#fff_1px,transparent_1px)]
-            [background-size:50px_50px]
-          "
-        />
-
-        {/* Amber glow */}
-        <div
-          className="
-            absolute -left-40 -top-40
-            h-[500px] w-[500px]
-            rounded-full
-            bg-amber-400/10
-            blur-[130px]
-          "
-        />
-
-        {/* Purple glow */}
-        <div
-          className="
-            absolute -bottom-40 -right-40
-            h-[500px] w-[500px]
-            rounded-full
-            bg-purple-500/10
-            blur-[130px]
-          "
-        />
-
-        {/* Center AI glow */}
-        <div
-          className="
-            absolute left-1/2 top-1/3
-            h-[400px] w-[400px]
-            -translate-x-1/2
-            rounded-full
-            bg-amber-400/[0.025]
-            blur-[120px]
-          "
-        />
-      </div>
-
-      {/* =====================================================
-          HEADER
-      ====================================================== */}
-
-      <header
-        className="
-          relative z-10
-          border-b border-zinc-800/70
-          bg-zinc-950/40
-          backdrop-blur-xl
-        "
+      <main
+        className="flex-1 overflow-y-auto"
+        aria-busy={loading}
       >
-        <div
-          className="
-            mx-auto flex h-16
-            max-w-5xl
-            items-center
-            justify-between
-            px-4 sm:px-6
-          "
-        >
-          {/* Back */}
-
-          <button
-            type="button"
-            onClick={() => navigate(-1)}
-            className="
-              group inline-flex
-              items-center gap-2
-              rounded-xl
-              border border-zinc-800
-              bg-zinc-900/50
-              px-3.5 py-2
-              text-sm text-zinc-400
-              transition-all
-              hover:border-zinc-700
-              hover:bg-zinc-800
-              hover:text-white
-            "
-          >
-            <FaArrowLeft
-              size={11}
-              className="
-                transition-transform
-                group-hover:-translate-x-0.5
-              "
-            />
-
-            <span>Back</span>
-          </button>
-
-          {/* Logo */}
-
-          <div className="flex items-center gap-2.5">
+        <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 sm:px-6">
+          {hasConversation ? (
             <div
-              className="
-                flex h-8 w-8
-                items-center justify-center
-                rounded-lg
-                border border-amber-400/20
-                bg-amber-400/10
-              "
+              role="log"
+              aria-live="polite"
+              aria-relevant="additions"
+              aria-label="Conversation"
+              className="space-y-8 py-8"
             >
-              <FaBrain
-                size={14}
-                className="text-amber-400"
-              />
-            </div>
-
-            <div className="hidden sm:block">
-              <p className="text-sm font-semibold text-zinc-200">
-                SecondBrain
-              </p>
-
-              <p className="text-[10px] text-zinc-600">
-                AI Knowledge Assistant
-              </p>
-            </div>
-          </div>
-
-          {/* New Chat */}
-
-          {messages.length > 0 ? (
-            <button
-              type="button"
-              onClick={clearChat}
-              className="
-                inline-flex
-                items-center gap-2
-                rounded-xl
-                px-3 py-2
-                text-xs text-zinc-500
-                transition
-                hover:bg-zinc-800
-                hover:text-zinc-200
-              "
-            >
-              <FaRotateRight size={10} />
-              New chat
-            </button>
-          ) : (
-            <div className="w-[82px]" />
-          )}
-        </div>
-      </header>
-
-      {/* =====================================================
-          CHAT
-      ====================================================== */}
-
-      <div className="relative z-10 flex min-h-0 flex-1 flex-col">
-        <div
-          className="
-            mx-auto flex
-            w-full max-w-4xl
-            flex-1 flex-col
-            px-4 sm:px-6
-          "
-        >
-          {messages.length === 0 ? (
-            /* =================================================
-               EMPTY STATE
-            ================================================== */
-
-            <div
-              className="
-                flex flex-1
-                flex-col
-                items-center
-                justify-center
-                py-12
-              "
-            >
-              {/* AI ICON */}
-
-              <div className="relative">
-                <div
-                  className="
-                    absolute inset-0
-                    animate-pulse
-                    rounded-3xl
-                    bg-amber-400/10
-                    blur-2xl
-                  "
+              {messages.map((message) => (
+                <MessageItem
+                  key={message.id}
+                  message={message}
+                  copied={copiedId === message.id}
+                  onCopy={handleCopy}
                 />
+              ))}
 
-                <div
-                  className="
-                    relative
-                    flex h-20 w-20
-                    items-center justify-center
-                    rounded-3xl
-                    border border-amber-400/20
-                    bg-gradient-to-br
-                    from-amber-400/10
-                    to-purple-500/10
-                    shadow-[0_0_60px_rgba(251,191,36,0.08)]
-                  "
-                >
-                  <FaWandMagicSparkles
-                    size={30}
-                    className="text-amber-400"
-                  />
-                </div>
-              </div>
+              {loading && <ThinkingIndicator />}
 
-              {/* Heading */}
-
-              <h1
-                className="
-                  mt-7
-                  text-center
-                  text-3xl
-                  font-semibold
-                  tracking-tight
-                  sm:text-4xl
-                "
-              >
-                Ask your{" "}
-                <span
-                  className="
-                    bg-gradient-to-r
-                    from-white
-                    via-zinc-300
-                    to-amber-400
-                    bg-clip-text
-                    text-transparent
-                  "
-                >
-                  Second Brain
-                </span>
-              </h1>
-
-              <p
-                className="
-                  mt-3
-                  max-w-lg
-                  text-center
-                  text-sm
-                  leading-6
-                  text-zinc-500
-                "
-              >
-                Ask questions about the knowledge, links,
-                notes and resources you have saved.
-              </p>
-
-              {/* Suggestions */}
-
-              <div
-                className="
-                  mt-9
-                  grid
-                  w-full
-                  max-w-3xl
-                  gap-3
-                  sm:grid-cols-3
-                "
-              >
-                {suggestions.map((suggestion) => {
-                  const Icon = suggestion.icon;
-
-                  return (
-                    <button
-                      key={suggestion.text}
-                      type="button"
-                      onClick={() =>
-                        handleSuggestion(
-                          suggestion.text
-                        )
-                      }
-                      className="
-                        group
-                        rounded-2xl
-                        border border-zinc-800
-                        bg-zinc-900/40
-                        p-4
-                        text-left
-                        transition-all
-                        hover:-translate-y-0.5
-                        hover:border-amber-400/20
-                        hover:bg-zinc-900
-                      "
-                    >
-                      <div
-                        className="
-                          flex h-9 w-9
-                          items-center justify-center
-                          rounded-xl
-                          bg-zinc-800
-                          transition
-                          group-hover:bg-amber-400/10
-                        "
-                      >
-                        <Icon
-                          size={14}
-                          className="
-                            text-zinc-500
-                            transition
-                            group-hover:text-amber-400
-                          "
-                        />
-                      </div>
-
-                      <p
-                        className="
-                          mt-3
-                          text-xs
-                          leading-5
-                          text-zinc-400
-                          transition
-                          group-hover:text-zinc-200
-                        "
-                      >
-                        {suggestion.text}
-                      </p>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ) : (
-            /* =================================================
-               MESSAGES
-            ================================================== */
-
-            <div className="flex-1 overflow-y-auto py-8">
-              <div className="space-y-8">
-                {messages.map((message) => {
-                  const isUser = message.role === "user";
-
-                  return (
-                    <div
-                      key={message.id}
-                      className={`
-                        flex gap-3
-                        ${
-                          isUser
-                            ? "justify-end"
-                            : "justify-start"
-                        }
-                      `}
-                    >
-                      {/* AI ICON */}
-
-                      {!isUser && (
-                        <div
-                          className="
-                            mt-1
-                            flex h-8 w-8
-                            shrink-0
-                            items-center justify-center
-                            rounded-xl
-                            border border-amber-400/20
-                            bg-amber-400/10
-                          "
-                        >
-                          <FaWandMagicSparkles
-                            size={12}
-                            className="text-amber-400"
-                          />
-                        </div>
-                      )}
-
-                      {/* MESSAGE */}
-
-                      <div
-                        className={`
-                          max-w-[85%]
-                          sm:max-w-[75%]
-                          ${isUser ? "order-first" : ""}
-                        `}
-                      >
-                        <div
-                          className={`
-                            rounded-2xl
-                            px-4 py-3.5
-                            text-sm
-                            leading-6
-                            ${
-                              isUser
-                                ? `
-                                  rounded-br-md
-                                  bg-amber-400
-                                  text-black
-                                `
-                                : `
-                                  rounded-bl-md
-                                  border border-zinc-800
-                                  bg-zinc-900/80
-                                  text-zinc-300
-                                `
-                            }
-                          `}
-                        >
-                          {message.content}
-                        </div>
-
-                        {/* Copy */}
-
-                        {!isUser && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              copyMessage(
-                                message.content
-                              )
-                            }
-                            className="
-                              mt-2
-                              inline-flex
-                              items-center gap-1.5
-                              text-[10px]
-                              text-zinc-700
-                              transition
-                              hover:text-zinc-400
-                            "
-                          >
-                            <FaCopy size={9} />
-                            Copy
-                          </button>
-                        )}
-                      </div>
-
-                      {/* USER ICON */}
-
-                      {isUser && (
-                        <div
-                          className="
-                            mt-1
-                            flex h-8 w-8
-                            shrink-0
-                            items-center justify-center
-                            rounded-xl
-                            border border-zinc-700
-                            bg-zinc-800
-                          "
-                        >
-                          <FaUser
-                            size={11}
-                            className="text-zinc-400"
-                          />
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-
-                {/* =================================================
-                    AI THINKING
-                ================================================== */}
-
-                {loading && (
-                  <div className="flex gap-3">
-                    <div
-                      className="
-                        mt-1
-                        flex h-8 w-8
-                        shrink-0
-                        items-center justify-center
-                        rounded-xl
-                        border border-amber-400/20
-                        bg-amber-400/10
-                      "
-                    >
-                      <FaWandMagicSparkles
-                        size={12}
-                        className="
-                          animate-pulse
-                          text-amber-400
-                        "
-                      />
-                    </div>
-
-                    <div
-                      className="
-                        flex items-center gap-1.5
-                        rounded-2xl
-                        rounded-bl-md
-                        border border-zinc-800
-                        bg-zinc-900/80
-                        px-5 py-4
-                      "
-                    >
-                      <span
-                        className="
-                          h-1.5 w-1.5
-                          animate-bounce
-                          rounded-full
-                          bg-zinc-500
-                          [animation-delay:-0.3s]
-                        "
-                      />
-
-                      <span
-                        className="
-                          h-1.5 w-1.5
-                          animate-bounce
-                          rounded-full
-                          bg-zinc-500
-                          [animation-delay:-0.15s]
-                        "
-                      />
-
-                      <span
-                        className="
-                          h-1.5 w-1.5
-                          animate-bounce
-                          rounded-full
-                          bg-zinc-500
-                        "
-                      />
-                    </div>
-                  </div>
-                )}
-
-                <div ref={messagesEndRef} />
-              </div>
-            </div>
-          )}
-
-          {/* =====================================================
-              INPUT
-          ====================================================== */}
-
-          <div className="pb-5 pt-3 sm:pb-7">
-            <div
-              className="
-                rounded-2xl
-                border border-zinc-800
-                bg-zinc-900/80
-                p-2
-                shadow-2xl
-                backdrop-blur-xl
-                transition-all
-                focus-within:border-amber-400/30
-                focus-within:shadow-[0_0_40px_rgba(251,191,36,0.04)]
-              "
-            >
-              <div className="flex items-end gap-2">
-                <textarea
-                  ref={textareaRef}
-                  value={input}
-                  onChange={handleInputChange}
-                  onKeyDown={handleKeyDown}
+              {error && (
+                <ErrorNotice
+                  error={error}
                   disabled={loading}
-                  rows={1}
-                  placeholder="Ask your Second Brain..."
-                  className="
-                    max-h-40
-                    min-h-[48px]
-                    flex-1
-                    resize-none
-                    bg-transparent
-                    px-3 py-3
-                    text-sm
-                    leading-6
-                    text-white
-                    outline-none
-                    placeholder:text-zinc-600
-                    disabled:cursor-not-allowed
-                    disabled:opacity-50
-                  "
+                  onRetry={handleRetry}
                 />
+              )}
 
-                {/* SEND */}
-
-                <button
-                  type="button"
-                  onClick={handleSend}
-                  disabled={!input.trim() || loading}
-                  className="
-                    mb-1
-                    flex h-10 w-10
-                    shrink-0
-                    items-center justify-center
-                    rounded-xl
-                    bg-amber-400
-                    text-black
-                    transition-all
-                    hover:bg-amber-300
-                    hover:shadow-[0_0_25px_rgba(251,191,36,0.15)]
-                    disabled:cursor-not-allowed
-                    disabled:bg-zinc-800
-                    disabled:text-zinc-600
-                    disabled:shadow-none
-                  "
-                >
-                  <FaArrowUp size={13} />
-                </button>
-              </div>
+              <div ref={messagesEndRef} />
             </div>
-
-            {/* Footer */}
-
-            <div
-              className="
-                mt-2.5
-                flex
-                items-center
-                justify-between
-                px-1
-              "
-            >
-              <p className="text-[10px] text-zinc-700">
-                Your AI answers using your saved knowledge.
-              </p>
-
-              <p
-                className="
-                  hidden
-                  text-[10px]
-                  text-zinc-700
-                  sm:block
-                "
-              >
-                Enter to send · Shift + Enter for new line
-              </p>
-            </div>
-          </div>
+          ) : (
+            <Welcome onPick={handleSuggestion} />
+          )}
         </div>
-      </div>
-    </main>
+      </main>
+
+      <Composer
+        value={input}
+        loading={loading}
+        textareaRef={textareaRef}
+        onChange={setInput}
+        onSubmit={handleSend}
+      />
+    </div>
   );
 };
 

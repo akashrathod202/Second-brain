@@ -97,7 +97,7 @@ import {
               {/* Ask SecondBrain */}
               <button  onClick={()=>{
                 navigate('/Ask')
-               alert("👋 Hey! The page is coming soon 🚀✨");
+                
               }}
                 type="button"
                 className="

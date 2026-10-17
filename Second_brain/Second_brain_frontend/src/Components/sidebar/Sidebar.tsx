@@ -13,6 +13,7 @@ import {
   FaClock,
   FaGear,
   FaXmark,
+  FaCalendarCheck 
 } from "react-icons/fa6";
 
 import { useNavigate } from "react-router-dom";
@@ -243,6 +244,16 @@ function Sidebar() {
               }
             />
 
+
+             <SidebarItem
+              to="/T"
+              label="TRACK"
+              icon={
+                <span className="text-red-400">
+                  < FaCalendarCheck  size={15} />
+                </span>
+              }
+            /> 
             
 
            

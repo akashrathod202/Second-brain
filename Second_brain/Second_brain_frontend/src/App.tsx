@@ -7,6 +7,7 @@ import Library  from "../src/pages/Library/Library"
 import Notes from "./pages/Notes/Notes"
 import  Links  from "./pages/Links/Links";
 import Videos from "./pages/Videos/Videos"
+import  T  from "./pages/TEACK/PersonalSpace";
 import { ProtectedRoute } from "./Components/auth/ProtectedRoute";
 import Signin from "./pages/auth/SignIn";
 import Signup from "./pages/auth/Signup";
@@ -36,6 +37,7 @@ function App() {
         <Route path="/videos" element={<Videos />} />
         <Route path="/create" element={<CreateContent/>} />
         <Route path="/Ask" element={<Ask/>} />
+        <Route path="/T" element={<T/>} />
         <Route
   path="/content/:contentId"
   element={<ContentDetail />}
